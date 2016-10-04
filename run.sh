@@ -26,7 +26,7 @@ shift $(expr $OPTIND - 1)
 
 echo "Running bagdump with input dir '$INPUT_DIR', output dir '$OUTPUT_DIR', docker image '$IMAGE_TAG'..."
 
-docker run --rm -it \
+docker run --rm\
   --volume="/$(pwd)/script:/script"\
   --volume="$INPUT_DIR:/data"\
   --volume="$OUTPUT_DIR:/output"\
