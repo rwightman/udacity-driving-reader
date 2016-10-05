@@ -12,13 +12,13 @@ from collections import defaultdict
 import os
 import cv2
 import rosbag
+import argparse
 import pandas as pd
 
 LEFT_CAMERA_TOPIC = "/left_camera/image_color"
 CENTER_CMAERA_TOPIC = "/center_camera/image_color"
 RIGHT_CAMERA_TOPIC = "/right_camera/image_color"
 STEERING_TOPIC = "/vehicle/steering_report"
-IMG_FORMAT = 'jpg'
 
 
 def get_outdir(base_dir, name):
@@ -46,10 +46,21 @@ def write_image(bridge, outdir, msg, fmt='png', table=None):
 
 
 def main():
+    parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
+    parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
+        help='Output folder')
+    parser.add_argument('-b', '--bagfile', type=str, nargs='?', default='/data/dataset.bag',
+        help='Input bag file')
+    parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
+        help='Image encode format, png or jpg')
+    parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
+    parser.set_defaults(debug=False)
+    args = parser.parse_args()
 
-    save_dir = '/output'
-    rosbag_file = '/data/dataset.bag'
-    debug_print = False
+    img_format = args.img_format
+    save_dir = args.outdir
+    rosbag_file = args.bagfile
+    debug_print = args.debug
 
     bridge = CvBridge()
 
@@ -73,15 +84,15 @@ def main():
             if topic == LEFT_CAMERA_TOPIC:
                 if debug_print:
                     print 'l_camera ' + str(msg.header.stamp.to_nsec())
-                write_image(bridge, left_outdir, msg, fmt=IMG_FORMAT, table=camera_dict)
+                write_image(bridge, left_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == CENTER_CMAERA_TOPIC:
                 if debug_print:
                     print 'c_camera ' + str(msg.header.stamp.to_nsec())
-                write_image(bridge, center_outdir, msg, fmt=IMG_FORMAT, table=camera_dict)
+                write_image(bridge, center_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == RIGHT_CAMERA_TOPIC:
                 if debug_print:
                     print 'r_camera ' + str(msg.header.stamp.to_nsec())
-                write_image(bridge, right_outdir, msg, fmt=IMG_FORMAT, table=camera_dict)
+                write_image(bridge, right_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == STEERING_TOPIC:
                 if debug_print:
                     print 'steering %u : %f, %f' % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle)

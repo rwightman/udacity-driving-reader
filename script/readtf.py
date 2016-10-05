@@ -40,13 +40,14 @@ def example_parser(example_serialized):
 
 
 def create_read_graph(data_dir, name, num_readers=4, estimated_examples_per_shard=64, coder=None):
-    # get sharded tf example files for the dataset
+    # Get sharded tf example files for the dataset
     data_files = datafiles(data_dir, name)
 
-    # create queue for sharded tf example files
+    # Create queue for sharded tf example files
+    # FIXME the num_epochs argument seems to have no impact? Queue keeps looping forever if not stopped.
     filename_queue = tf.train.string_input_producer(data_files, shuffle=False, capacity=1, num_epochs=1)
 
-    # create queue for examples
+    # Create queue for examples
     examples_queue = tf.FIFOQueue(capacity=estimated_examples_per_shard + 4, dtypes=[tf.string])
 
     enqueue_ops = []
@@ -67,10 +68,11 @@ def create_read_graph(data_dir, name, num_readers=4, estimated_examples_per_shar
 
 
 def main():
-    data_dir = '/output/left'
+    data_dir = '/data'
+    num_images = 3*15213
 
     # Build graph and initialize variables
-    read_op = create_read_graph(data_dir, 'left')
+    read_op = create_read_graph(data_dir, 'combined')
     init_op = tf.group(tf.initialize_all_variables(), tf.initialize_local_variables())
     sess = tf.Session()
     sess.run(init_op)
@@ -80,7 +82,7 @@ def main():
     threads = tf.train.start_queue_runners(sess=sess, coord=coord)
     read_count = 0
     try:
-        while not coord.should_stop():
+        while read_count < num_images and not coord.should_stop():
             read_output = sess.run(read_op)
             for o in read_output:
                 decoded_image = o[0]
@@ -91,10 +93,12 @@ def main():
                 print "Read %d examples" % read_count
 
     except tf.errors.OutOfRangeError:
-        print 'Done reading'
+        print "Reading stopped by Queue"
     finally:
         # Ask the threads to stop.
         coord.request_stop()
+
+    print 'Done reading %d images' % read_count
 
     # Wait for threads to finish.
     coord.join(threads)

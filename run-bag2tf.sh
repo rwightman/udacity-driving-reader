@@ -1,2 +1,2 @@
 #!/bin/bash
-./run.sh "$@" python script/bag2tf.py
+./run.sh -r "python script/bag2tf.py" "$@"

@@ -12,13 +12,13 @@ import os
 import sys
 import cv2
 import rosbag
+import argparse
 import tensorflow as tf
 
 LEFT_CAMERA_TOPIC = "/left_camera/image_color"
 CENTER_CAMERA_TOPIC = "/center_camera/image_color"
 RIGHT_CAMERA_TOPIC = "/right_camera/image_color"
 STEERING_TOPIC = "/vehicle/steering_report"
-IMG_FORMAT = 'jpg'
 
 
 def feature_int64(value_list):
@@ -98,7 +98,7 @@ def write_example(writer, bridge, image_msg, steering_msg, image_fmt='png'):
 
 
 class ShardWriter():
-    def __init__(self, num_entries, outdir, name='dataset', num_shards = 256):
+    def __init__(self, outdir, name, num_entries, num_shards=256):
         self.num_entries = num_entries
         self.outdir = outdir
         self.name = name
@@ -128,27 +128,44 @@ class ShardWriter():
             sys.stdout.flush()
 
 def main():
+    parser = argparse.ArgumentParser(description='Convert rosbag to tensorflow sharded records.')
+    parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
+        help='Output folder')
+    parser.add_argument('-b', '--bagfile', type=str, nargs='?', default='/data/dataset.bag',
+        help='Input bag file')
+    parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
+        help='Image encode format, png or jpg')
+    parser.add_argument('-n', '--num_images', type=int, nargs='?', default=15213,
+        help='Number of images per camera')
+    parser.add_argument('-s', '--separate', dest='separate', action='store_true', help='Separate sets per camera')
+    parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
+    parser.set_defaults(separate=False)
+    parser.set_defaults(debug=False)
+    args = parser.parse_args()
 
-    save_dir = '/output'
-    rosbag_file = '/data/dataset.bag'
-    debug_print = False
-    single_stream = False
-    num_images = 15213
+    img_format = args.img_format
+    save_dir = args.outdir
+    rosbag_file = args.bagfile
+    debug_print = args.debug
+    separate_streams = args.separate
+    num_images = args.num_images # FIXME detect from bag_info (takes more time)
 
+    print type(num_images)
+    print separate_streams
     bridge = CvBridge()
 
     filter_topics = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC, STEERING_TOPIC]
 
-    if single_stream:
-        single_outdir = get_outdir(save_dir, "single")
-        shard_writer = ShardWriter(single_outdir, 3*num_images, name='single')
-    else:
+    if separate_streams:
         left_outdir = get_outdir(save_dir, "left")
         center_outdir = get_outdir(save_dir, "center")
         right_outdir = get_outdir(save_dir, "right")
-        shard_writer_left = ShardWriter(num_images, left_outdir, name='left', num_shards=64)
-        shard_writer_center = ShardWriter(num_images, center_outdir, name='center', num_shards=64)
-        shard_writer_right = ShardWriter(num_images, right_outdir, name='right', num_shards=64)
+        shard_writer_left = ShardWriter(left_outdir, 'left', num_images, num_shards=32)
+        shard_writer_center = ShardWriter(center_outdir,'center', num_images, num_shards=32)
+        shard_writer_right = ShardWriter(right_outdir, 'right', num_images, num_shards=32)
+    else:
+        single_outdir = get_outdir(save_dir, "combined")
+        shard_writer = ShardWriter(single_outdir, 'combined', 3*num_images, num_shards=128)
 
     latest_steering_msg = None
 
@@ -162,17 +179,17 @@ def main():
                     print msg.frame_id + str(msg.header.stamp.to_nsec())
                     print 'steering %u : image %u' % (latest_steering_msg.header.stamp.to_nsec(), msg.header.stamp.to_nsec())
 
-                if single_stream:
-                    writer = shard_writer
-                else:
+                if separate_streams:
                     if topic == LEFT_CAMERA_TOPIC:
                         writer = shard_writer_left
                     elif topic == CENTER_CAMERA_TOPIC:
                         writer = shard_writer_center
                     elif topic == RIGHT_CAMERA_TOPIC:
                         writer = shard_writer_right
+                else:
+                    writer = shard_writer
 
-                write_example(writer, bridge, msg, latest_steering_msg, image_fmt=IMG_FORMAT)
+                write_example(writer, bridge, msg, latest_steering_msg, image_fmt=img_format)
                    
             elif topic == STEERING_TOPIC:
                 if debug_print:
