@@ -16,7 +16,7 @@ import argparse
 import pandas as pd
 
 LEFT_CAMERA_TOPIC = "/left_camera/image_color"
-CENTER_CMAERA_TOPIC = "/center_camera/image_color"
+CENTER_CAMERA_TOPIC = "/center_camera/image_color"
 RIGHT_CAMERA_TOPIC = "/right_camera/image_color"
 STEERING_TOPIC = "/vehicle/steering_report"
 
@@ -66,7 +66,7 @@ def main():
 
     include_images = True
     if include_images:
-        filter_topics = [LEFT_CAMERA_TOPIC, CENTER_CMAERA_TOPIC, RIGHT_CAMERA_TOPIC, STEERING_TOPIC]
+        filter_topics = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC, STEERING_TOPIC]
         left_outdir = get_outdir(save_dir, "left")
         center_outdir = get_outdir(save_dir, "center")
         right_outdir = get_outdir(save_dir, "right")
@@ -85,7 +85,7 @@ def main():
                 if debug_print:
                     print 'l_camera ' + str(msg.header.stamp.to_nsec())
                 write_image(bridge, left_outdir, msg, fmt=img_format, table=camera_dict)
-            elif topic == CENTER_CMAERA_TOPIC:
+            elif topic == CENTER_CAMERA_TOPIC:
                 if debug_print:
                     print 'c_camera ' + str(msg.header.stamp.to_nsec())
                 write_image(bridge, center_outdir, msg, fmt=img_format, table=camera_dict)
