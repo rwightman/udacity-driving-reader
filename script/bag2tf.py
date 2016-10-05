@@ -135,7 +135,7 @@ def main():
         help='Input bag file')
     parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
-    parser.add_argument('-n', '--num_images', type=int, nargs='?', default=15213,
+    parser.add_argument('-n', '--num_images', type=int, nargs='?', default=15212,
         help='Number of images per camera')
     parser.add_argument('-s', '--separate', dest='separate', action='store_true', help='Separate sets per camera')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')

@@ -69,7 +69,7 @@ def create_read_graph(data_dir, name, num_readers=4, estimated_examples_per_shar
 
 def main():
     data_dir = '/data'
-    num_images = 3*15213
+    num_images = 3*15212
 
     # Build graph and initialize variables
     read_op = create_read_graph(data_dir, 'combined')
