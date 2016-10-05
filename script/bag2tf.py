@@ -7,6 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 # ==============================================================================
 
+from __future__ import print_function
 from cv_bridge import CvBridge, CvBridgeError
 import os
 import sys
@@ -110,7 +111,6 @@ class ShardWriter():
 
     def _update_writer(self):
         if not self._writer or self._shard_counter >= self.num_entries_per_shard:
-            sys.stdout.flush()
             shard = self._counter // self.num_entries_per_shard
             assert(shard <= self.num_shards)
             output_filename = '%s-%.5d-of-%.5d' % (self.name, shard, self.num_shards)
@@ -150,8 +150,6 @@ def main():
     separate_streams = args.separate
     num_images = args.num_images # FIXME detect from bag_info (takes more time)
 
-    print type(num_images)
-    print separate_streams
     bridge = CvBridge()
 
     filter_topics = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC, STEERING_TOPIC]
@@ -168,7 +166,7 @@ def main():
         shard_writer = ShardWriter(single_outdir, 'combined', 3*num_images, num_shards=128)
 
     latest_steering_msg = None
-
+    example_count = 0
     with rosbag.Bag(rosbag_file, "r") as bag:
         for topic, msg, t in bag.read_messages(topics=filter_topics):
             if (topic == LEFT_CAMERA_TOPIC or 
@@ -176,8 +174,9 @@ def main():
                 topic == RIGHT_CAMERA_TOPIC):
 
                 if debug_print:
-                    print msg.frame_id + str(msg.header.stamp.to_nsec())
-                    print 'steering %u : image %u' % (latest_steering_msg.header.stamp.to_nsec(), msg.header.stamp.to_nsec())
+                    print("%s_camera %d" % (msg.header.frame_id[0], msg.header.stamp.to_nsec()))
+                    print("steering %d, %f" % 
+                        (latest_steering_msg.header.stamp.to_nsec(), latest_steering_msg.steering_wheel_angle))
 
                 if separate_streams:
                     if topic == LEFT_CAMERA_TOPIC:
@@ -190,12 +189,16 @@ def main():
                     writer = shard_writer
 
                 write_example(writer, bridge, msg, latest_steering_msg, image_fmt=img_format)
+                example_count += 1
                    
             elif topic == STEERING_TOPIC:
                 if debug_print:
-                    print 'steering %u : %f, %f' % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle)
+                    print("steering %d, %f" % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle))
 
                 latest_steering_msg = msg
+                
+    print("Completed processing %d images to TF examples." % example_count)
+    sys.stdout.flush()
 
 
 if __name__ == '__main__':

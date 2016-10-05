@@ -7,6 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 # ==============================================================================
 
+from __future__ import print_function
 import os
 import sys
 import tensorflow as tf
@@ -90,15 +91,15 @@ def main():
                 assert decoded_image.shape[2] == 3
             read_count += len(read_output)
             if not read_count % 1000:
-                print "Read %d examples" % read_count
+                print("Read %d examples" % read_count)
 
     except tf.errors.OutOfRangeError:
-        print "Reading stopped by Queue"
+        print("Reading stopped by Queue")
     finally:
         # Ask the threads to stop.
         coord.request_stop()
 
-    print 'Done reading %d images' % read_count
+    print("Done reading %d images" % read_count)
 
     # Wait for threads to finish.
     coord.join(threads)

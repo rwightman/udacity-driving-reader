@@ -7,6 +7,7 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 # ==============================================================================
 
+from __future__ import print_function
 from cv_bridge import CvBridge, CvBridgeError
 from collections import defaultdict
 import os
@@ -83,19 +84,19 @@ def main():
         for topic, msg, t in bag.read_messages(topics=filter_topics):
             if topic == LEFT_CAMERA_TOPIC:
                 if debug_print:
-                    print 'l_camera ' + str(msg.header.stamp.to_nsec())
+                    print("l_camera %d" % msg.header.stamp.to_nsec())
                 write_image(bridge, left_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == CENTER_CAMERA_TOPIC:
                 if debug_print:
-                    print 'c_camera ' + str(msg.header.stamp.to_nsec())
+                    print("c_camera %d" % msg.header.stamp.to_nsec())
                 write_image(bridge, center_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == RIGHT_CAMERA_TOPIC:
                 if debug_print:
-                    print 'r_camera ' + str(msg.header.stamp.to_nsec())
+                    print("r_camera %d" % msg.header.stamp.to_nsec())
                 write_image(bridge, right_outdir, msg, fmt=img_format, table=camera_dict)
             elif topic == STEERING_TOPIC:
                 if debug_print:
-                    print 'steering %u : %f, %f' % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle)
+                    print("steering %d %f" % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle))
                 steering_dict["seq"].append(msg.header.seq)
                 steering_dict["timestamp"].append(msg.header.stamp.to_nsec())
                 steering_dict["angle"].append(msg.steering_wheel_angle)
