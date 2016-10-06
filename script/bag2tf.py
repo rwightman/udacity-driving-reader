@@ -19,6 +19,7 @@ import tensorflow as tf
 LEFT_CAMERA_TOPIC = "/left_camera/image_color"
 CENTER_CAMERA_TOPIC = "/center_camera/image_color"
 RIGHT_CAMERA_TOPIC = "/right_camera/image_color"
+CAMERA_TOPICS = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC]
 STEERING_TOPIC = "/vehicle/steering_report"
 
 
@@ -169,21 +170,19 @@ def main():
     example_count = 0
     with rosbag.Bag(rosbag_file, "r") as bag:
         for topic, msg, t in bag.read_messages(topics=filter_topics):
-            if (topic == LEFT_CAMERA_TOPIC or 
-                topic == CENTER_CAMERA_TOPIC or
-                topic == RIGHT_CAMERA_TOPIC):
+            if topic in CAMERA_TOPICS:
 
                 if debug_print:
-                    print("%s_camera %d" % (msg.header.frame_id[0], msg.header.stamp.to_nsec()))
+                    print("%s_camera %d" % (topic[1], msg.header.stamp.to_nsec()))
                     print("steering %d, %f" % 
                         (latest_steering_msg.header.stamp.to_nsec(), latest_steering_msg.steering_wheel_angle))
 
                 if separate_streams:
-                    if topic == LEFT_CAMERA_TOPIC:
+                    if topic[1] == 'l':
                         writer = shard_writer_left
-                    elif topic == CENTER_CAMERA_TOPIC:
+                    elif topic[1] == 'c':
                         writer = shard_writer_center
-                    elif topic == RIGHT_CAMERA_TOPIC:
+                    elif topic[1] == 'r':
                         writer = shard_writer_right
                 else:
                     writer = shard_writer
@@ -196,7 +195,7 @@ def main():
                     print("steering %d, %f" % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle))
 
                 latest_steering_msg = msg
-                
+
     print("Completed processing %d images to TF examples." % example_count)
     sys.stdout.flush()
 
