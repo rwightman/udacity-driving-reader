@@ -31,6 +31,24 @@ def get_outdir(base_dir, name):
         os.makedirs(outdir)
     return outdir
 
+def uncompress_image(compressed_msg, encoding):
+    """
+    Take a sensor_msgs/CompressedImage and encoding
+    This will assume the compression has ignored the encoding and
+    will apply the encoding
+    return a sensor_msgs/Image
+    """
+    fh = BytesIO(compressed_msg.data)
+    img = Image.open(fh)
+ 
+    output_msg = smImage()
+    output_msg.header = compressed_msg.header
+    output_msg.width, output_msg.height = img.size
+    output_msg.encoding = encoding
+    output_msg.is_bigendian = False  # TODO
+    output_msg.step = output_msg.width
+    output_msg.data = img.tostring()
+    return output_msg
 
 def write_image(bridge, outdir, msg, fmt='png'):
     image_filename = os.path.join(outdir, str(msg.header.stamp.to_nsec()) + '.' + fmt)
@@ -43,6 +61,8 @@ def write_image(bridge, outdir, msg, fmt='png'):
 
 
 def main():
+    compressed_images=True
+    
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
         help='Output folder')
@@ -100,7 +120,11 @@ def main():
                     if debug_print:
                         print("%s_camera %d" % (topic[1], msg.header.stamp.to_nsec()))
 
-                    image_filename = write_image(bridge, outdir, msg, fmt=img_format)
+                    if compressed_images:
+                        msg = uncompress_image(msg, "bgr8")
+                        image_filename = write_image(bridge, outdir, msg, fmt=img_format)
+                    else:
+                        image_filename = write_image(bridge, outdir, msg, fmt=img_format)
                     camera_dict["seq"].append(msg.header.seq)
                     camera_dict["timestamp"].append(msg.header.stamp.to_nsec())
                     camera_dict["width"].append(msg.width)
