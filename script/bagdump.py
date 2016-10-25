@@ -12,17 +12,13 @@ from cv_bridge import CvBridge, CvBridgeError
 from collections import defaultdict
 import os
 import sys
-import glob
 import cv2
-import rosbag
+import imghdr
 import argparse
+import numpy as np
 import pandas as pd
 
-LEFT_CAMERA_TOPIC = "/left_camera/image_color"
-CENTER_CAMERA_TOPIC = "/center_camera/image_color"
-RIGHT_CAMERA_TOPIC = "/right_camera/image_color"
-CAMERA_TOPICS = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC]
-STEERING_TOPIC = "/vehicle/steering_report"
+from bagutils import *
 
 
 def get_outdir(base_dir, name):
@@ -32,22 +28,81 @@ def get_outdir(base_dir, name):
     return outdir
 
 
+def check_format(data):
+    img_fmt = imghdr.what(None, h=data)
+    return 'jpg' if img_fmt == 'jpeg' else img_fmt
+
+
 def write_image(bridge, outdir, msg, fmt='png'):
+    results = {}
     image_filename = os.path.join(outdir, str(msg.header.stamp.to_nsec()) + '.' + fmt)
     try:
-        cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
-        cv2.imwrite(image_filename, cv_image)
+        if hasattr(msg, 'format') and 'compressed' in msg.format:
+            buf = np.ndarray(shape=(1, len(msg.data)), dtype=np.uint8, buffer=msg.data)
+            cv_image = cv2.imdecode(buf, cv2.IMREAD_ANYCOLOR)
+            if cv_image.shape[2] != 3:
+                print("Invalid image %s" % image_filename)
+                return results
+            results['height'] = cv_image.shape[0]
+            results['width'] = cv_image.shape[1]
+            # Avoid re-encoding if we don't have to
+            if check_format(msg.data) == fmt:
+                buf.tofile(image_filename)
+            else:
+                cv2.imwrite(image_filename, cv_image)
+        else:
+            cv_image = bridge.imgmsg_to_cv2(msg, "bgr8")
+            cv2.imwrite(image_filename, cv_image)
     except CvBridgeError as e:
         print(e)
-    return image_filename
+    results['filename'] = image_filename
+    return results
+
+
+def camera2dict(msg, write_results, camera_dict):
+    camera_dict["seq"].append(msg.header.seq)
+    camera_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    camera_dict["width"].append(write_results['width'] if 'width' in write_results else msg.width)
+    camera_dict['height'].append(write_results['height'] if 'height' in write_results else msg.height)
+    camera_dict["frame_id"].append(msg.header.frame_id)
+    camera_dict["filename"].append(write_results['filename'])
+
+
+def steering2dict(msg, steering_dict):
+    steering_dict["seq"].append(msg.header.seq)
+    steering_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    steering_dict["angle"].append(msg.steering_wheel_angle)
+    steering_dict["torque"].append(msg.steering_wheel_torque)
+    steering_dict["speed"].append(msg.speed)
+
+
+def gps2dict(msg, gps_dict):
+    gps_dict["seq"].append(msg.header.seq)
+    gps_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    gps_dict["status"].append(msg.status.status)
+    gps_dict["service"].append(msg.status.service)
+    gps_dict["lat"].append(msg.latitude)
+    gps_dict["long"].append(msg.longitude)
+    gps_dict["alt"].append(msg.altitude)
+
+
+def camera_select(topic, select_from):
+    if topic.startswith('/l'):
+        return select_from[0]
+    elif topic.startswith('/c'):
+        return select_from[1]
+    elif topic.startswith('/r'):
+        return select_from[2]
+    else:
+        assert False, "Unexpected topic"
 
 
 def main():
     parser = argparse.ArgumentParser(description='Convert rosbag to images and csv.')
     parser.add_argument('-o', '--outdir', type=str, nargs='?', default='/output',
         help='Output folder')
-    parser.add_argument('-b', '--bagfiles', type=str, nargs='?', default='/data/*.bag',
-        help='Input bag file or pattern')
+    parser.add_argument('-i', '--indir', type=str, nargs='?', default='/data',
+        help='Input folder where bagfiles are located')
     parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
@@ -56,31 +111,25 @@ def main():
 
     img_format = args.img_format
     base_outdir = args.outdir
-    rosbag_pattern = args.bagfiles
+    indir = args.indir
     debug_print = args.debug
 
     bridge = CvBridge()
 
     include_images = True
+    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC]
     if include_images:
-        filter_topics = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC, STEERING_TOPIC]
-    else:
-        filter_topics = [STEERING_TOPIC]
+        filter_topics += CAMERA_TOPICS
 
-    bagfiles = glob.glob(rosbag_pattern)
-    if not bagfiles:
-        print("No bagfiles found matching %s" % rosbag_pattern)
-        exit(1)
-
-    for bagfile in bagfiles:
-        print("Processing bag %s" % bagfile)
+    bagsets = find_bagsets(indir, "*.bag", filter_topics)
+    for bs in bagsets:
+        print("Processing set %s" % bs.name)
         sys.stdout.flush()
 
-        dataset_name = os.path.splitext(os.path.basename(bagfile))[0]
-        dataset_dir = get_outdir(base_outdir, dataset_name)
-        left_outdir = get_outdir(dataset_dir, "left")
-        center_outdir = get_outdir(dataset_dir, "center")
-        right_outdir = get_outdir(dataset_dir, "right")
+        dataset_outdir = os.path.join(base_outdir, "%s" % bs.name)
+        left_outdir = get_outdir(dataset_outdir, "left")
+        center_outdir = get_outdir(dataset_outdir, "center")
+        right_outdir = get_outdir(dataset_outdir, "right")
 
         camera_cols = ["seq", "timestamp", "width", "height", "frame_id", "filename"]
         camera_dict = defaultdict(list)
@@ -88,43 +137,62 @@ def main():
         steering_cols = ["seq", "timestamp", "angle", "torque", "speed"]
         steering_dict = defaultdict(list)
 
-        with rosbag.Bag(bagfile, "r") as bag:
-            for topic, msg, t in bag.read_messages(topics=filter_topics):
-                if topic in CAMERA_TOPICS:
-                    if topic[1] == 'l':
-                        outdir = left_outdir
-                    elif topic[1] == 'c':
-                        outdir = center_outdir
-                    elif topic[1]  == 'r':
-                        outdir = right_outdir
-                    if debug_print:
-                        print("%s_camera %d" % (topic[1], msg.header.stamp.to_nsec()))
+        gps_cols = ["seq", "timestamp", "status", "service", "lat", "long", "alt"]
+        gps_dict = defaultdict(list)
 
-                    image_filename = write_image(bridge, outdir, msg, fmt=img_format)
-                    camera_dict["seq"].append(msg.header.seq)
-                    camera_dict["timestamp"].append(msg.header.stamp.to_nsec())
-                    camera_dict["width"].append(msg.width)
-                    camera_dict["height"].append(msg.height)
-                    camera_dict["frame_id"].append(msg.header.frame_id)
-                    camera_dict["filename"].append(os.path.relpath(image_filename, dataset_dir))
+        bs.write_infos(dataset_outdir)
+        readers = bs.get_readers()
+        stats_acc = defaultdict(int)
 
-                elif topic == STEERING_TOPIC:
-                    if debug_print:
-                        print("steering %d %f" % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle))
+        def _process_msg(topic, msg, stats):
+            timestamp = msg.header.stamp.to_nsec()
+            if topic in CAMERA_TOPICS:
+                outdir = camera_select(topic, (left_outdir, center_outdir, right_outdir))
+                if debug_print:
+                    print("%s_camera %d" % (topic[1], timestamp))
 
-                    steering_dict["seq"].append(msg.header.seq)
-                    steering_dict["timestamp"].append(msg.header.stamp.to_nsec())
-                    steering_dict["angle"].append(msg.steering_wheel_angle)
-                    steering_dict["torque"].append(msg.steering_wheel_torque)
-                    steering_dict["speed"].append(msg.speed)
+                results = write_image(bridge, outdir, msg, fmt=img_format)
+                results['filename'] = os.path.relpath(results['filename'], dataset_outdir)
+                camera2dict(msg, results, camera_dict)
+                stats['img_count'] += 1
+                stats['msg_count'] += 1
 
-        camera_csv_path = os.path.join(dataset_dir, 'camera.csv')
+            elif topic == STEERING_TOPIC:
+                if debug_print:
+                    print("steering %d %f" % (timestamp, msg.steering_wheel_angle))
+
+                steering2dict(msg, steering_dict)
+                stats['msg_count'] += 1
+
+            elif topic == GPS_FIX_TOPIC:
+                if debug_print:
+                    print("gps      %d %d, %d" % (timestamp, msg.latitude, msg.longitude))
+
+                gps2dict(msg, gps_dict)
+                stats['msg_count'] += 1
+
+        # no need to cycle through readers in any order for dumping, rip through each on in sequence
+        for reader in readers:
+            for result in reader.read_messages():
+                _process_msg(*result, stats=stats_acc)
+                if stats_acc['img_count'] % 1000 == 0 or stats_acc['msg_count'] % 5000 == 0:
+                    print("%d images, %d messages processed..." %
+                          (stats_acc['img_count'], stats_acc['msg_count']))
+
+        print("Writing done. %d images, %d messages processed." %
+              (stats_acc['img_count'], stats_acc['msg_count']))
+
+        camera_csv_path = os.path.join(dataset_outdir, 'camera.csv')
         camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
         camera_df.to_csv(camera_csv_path, index=False)
 
-        steering_csv_path = os.path.join(dataset_dir, 'steering.csv')
+        steering_csv_path = os.path.join(dataset_outdir, 'steering.csv')
         steering_df = pd.DataFrame(data=steering_dict, columns=steering_cols)
         steering_df.to_csv(steering_csv_path, index=False)
+
+        gps_csv_path = os.path.join(dataset_outdir, 'gps.csv')
+        gps_df = pd.DataFrame(data=gps_dict, columns=gps_cols)
+        gps_df.to_csv(gps_csv_path, index=False)
 
 if __name__ == '__main__':
     main()
