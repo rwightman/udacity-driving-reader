@@ -15,6 +15,7 @@ import sys
 import cv2
 import imghdr
 import argparse
+import functools
 import numpy as np
 import pandas as pd
 
@@ -178,9 +179,11 @@ def main():
                 if stats_acc['img_count'] % 1000 == 0 or stats_acc['msg_count'] % 5000 == 0:
                     print("%d images, %d messages processed..." %
                           (stats_acc['img_count'], stats_acc['msg_count']))
+                    sys.stdout.flush()
 
         print("Writing done. %d images, %d messages processed." %
               (stats_acc['img_count'], stats_acc['msg_count']))
+        sys.stdout.flush()
 
         camera_csv_path = os.path.join(dataset_outdir, 'camera.csv')
         camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
@@ -193,6 +196,36 @@ def main():
         gps_csv_path = os.path.join(dataset_outdir, 'gps.csv')
         gps_df = pd.DataFrame(data=gps_dict, columns=gps_cols)
         gps_df.to_csv(gps_csv_path, index=False)
+
+        gen_interpolated = True
+        if gen_interpolated:
+            # A little pandas magic to interpolate steering/gps samples to camera frames
+            camera_df['timestamp'] = pd.to_datetime(camera_df['timestamp'])
+            camera_df.set_index(['timestamp'], inplace=True)
+            camera_df.index.rename('index', inplace=True)
+            steering_df['timestamp'] = pd.to_datetime(steering_df['timestamp'])
+            steering_df.set_index(['timestamp'], inplace=True)
+            steering_df.index.rename('index', inplace=True)
+            gps_df['timestamp'] = pd.to_datetime(gps_df['timestamp'])
+            gps_df.set_index(['timestamp'], inplace=True)
+            gps_df.index.rename('index', inplace=True)
+
+            merged = functools.reduce(lambda left, right: pd.merge(
+                left, right, how='outer', left_index=True, right_index=True), [camera_df, steering_df, gps_df])
+            merged.interpolate(method='time', inplace=True)
+
+            filtered_cols = ['timestamp', 'width', 'height', 'frame_id', 'filename',
+                             'angle', 'torque', 'speed',
+                             'lat', 'long', 'alt']
+            filtered = merged.loc[camera_df.index]  # back to only camera rows
+            filtered.fillna(0.0, inplace=True)
+            filtered['timestamp'] = filtered.index.astype('int')  # add back original timestamp integer col
+            filtered['width'] = filtered['width'].astype('int')  # cast back to int
+            filtered['height'] = filtered['height'].astype('int')  # cast back to int
+            filtered = filtered[filtered_cols]  # filter and reorder columns for final output
+
+            interpolated_csv_path = os.path.join(dataset_outdir, 'interpolated.csv')
+            filtered.to_csv(interpolated_csv_path, header=True)
 
 if __name__ == '__main__':
     main()
