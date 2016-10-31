@@ -57,47 +57,73 @@ def check_image_format(data):
     return 'jpg' if img_fmt == 'jpeg' else img_fmt
 
 
-def to_steering_dict(msg=None):
+def to_steering_dict(sample_list=[], target_sample_count=0):
+    if not sample_list:
+        count = 1 if not target_sample_count else target_sample_count
+        return {
+            'steer/timestamp': feature_int64([0] * count),
+            'steer/angle': feature_float([0.0] * count),
+            'steer/torque': feature_float([0.0] * count),
+            'steer/speed': feature_float([0.0] * count),
+        }
+    #  extend samples to target count if set, needed if fixed sized tensors expected on read
+    if target_sample_count and len(sample_list) < target_sample_count:
+        sample_list += [sample_list[-1]] * (target_sample_count - len(sample_list))
+    timestamps = []
+    angles = []
+    torques = []
+    speeds = []
+    for timestamp, msg in sample_list:
+        timestamps += [timestamp]
+        angles += [msg.steering_wheel_angle]
+        torques += [msg.steering_wheel_torque]
+        speeds += [msg.speed]
     steering_dict = {
-        'steer/timestamp': feature_int64(0),
-        'steer/seq': feature_int64(0),
-        'steer/angle': feature_float(0.0),
-        'steer/torque': feature_float(0.0),
-        'steer/speed': feature_float(0.0),
-    } if msg is None else {
-        'steer/timestamp': feature_int64(msg.header.stamp.to_nsec()),
-        'steer/seq': feature_int64(msg.header.seq),
-        'steer/angle': feature_float(msg.steering_wheel_angle),
-        'steer/torque': feature_float(msg.steering_wheel_torque),
-        'steer/speed': feature_float(msg.speed),
+        'steer/timestamp': feature_int64(timestamps),
+        'steer/angle': feature_float(angles),
+        'steer/torque': feature_float(torques),
+        'steer/speed': feature_float(speeds),
     }
     return steering_dict
 
 
-def to_gps_dict(msg=None):
+def to_gps_dict(sample_list=[], target_sample_count=0):
+    if not sample_list:
+        count = 1 if not target_sample_count else target_sample_count
+        return {
+            'gps/timestamp': feature_int64([0] * count),
+            'gps/lat': feature_float([0.0] * count),
+            'gps/long': feature_float([0.0] * count),
+            'gps/alt': feature_float([0.0] * count),
+        }
+    #  extend samples to target count if set, needed if fixed sized tensors expected on read
+    if target_sample_count and len(sample_list) < target_sample_count:
+        sample_list += [sample_list[-1]] * (target_sample_count - len(sample_list))
+    timestamps = []
+    lats = []
+    longs = []
+    alts = []
+    for timestamp, msg in sample_list:
+        timestamps += [timestamp]
+        lats += [msg.latitude]
+        longs += [msg.longitude]
+        alts += [msg.altitude]
     gps_dict = {
-        'gps/timestamp': feature_int64(0),
-        'gps/seq': feature_int64(0),
-        'gps/lat': feature_float(0.0),
-        'gps/long': feature_float(0.0),
-        'gps/alt': feature_float(0.0),
-    } if msg is None else {
-        'gps/timestamp': feature_int64(msg.header.stamp.to_nsec()),
-        'gps/seq': feature_int64(msg.header.seq),
-        'gps/lat': feature_float(msg.latitude),
-        'gps/long': feature_float(msg.longitude),
-        'gps/alt': feature_float(msg.altitude),
+        'gps/timestamp': feature_int64(timestamps),
+        'gps/lat': feature_float(lats),
+        'gps/long': feature_float(longs),
+        'gps/alt': feature_float(alts),
     }
     return gps_dict
 
 
 class ShardWriter():
-    def __init__(self, outdir, name, num_entries, num_shards=256):
+    def __init__(self, outdir, name, num_entries, max_num_shards=256):
         self.num_entries = num_entries
         self.outdir = outdir
         self.name = name
-        self.num_shards = num_shards
-        self.num_entries_per_shard = num_entries // num_shards
+        self.max_num_shards = max_num_shards
+        self.num_entries_per_shard = num_entries // max_num_shards
         self._writer = None
         self._shard_counter = 0
         self._counter = 0
@@ -105,8 +131,8 @@ class ShardWriter():
     def _update_writer(self):
         if not self._writer or self._shard_counter >= self.num_entries_per_shard:
             shard = self._counter // self.num_entries_per_shard
-            assert(shard <= self.num_shards)
-            output_filename = '%s-%.5d-of-%.5d' % (self.name, shard, self.num_shards)
+            assert(shard <= self.max_num_shards)
+            output_filename = '%s-%.5d-of-%.5d' % (self.name, shard, self.max_num_shards-1)
             output_file = os.path.join(self.outdir, output_filename)
             self._writer = tf.python_io.TFRecordWriter(output_file)
             self._shard_counter = 0
@@ -117,8 +143,20 @@ class ShardWriter():
         self._shard_counter += 1
         self._counter += 1
         if not self._counter % 1000:
-            print('Processed %d of %d images for %s' % (self._counter, self.num_entries, self.name))
+            print('Written %d of %d images for %s' % (self._counter, self.num_entries, self.name))
             sys.stdout.flush()
+
+
+# FIXME lame constants
+MIN_SPEED = 2.22  # 2.22 m/s ~ 8km/h ~ 5mph
+WRITE_ENABLE_SLOW_START = 10  # 10 steering samples above min speed before restart
+
+
+def dequeue_samples_until(queue, timestamp):
+    samples = []
+    while queue and queue[0][0] < timestamp:
+        samples.append(heapq.heappop(queue))
+    return samples
 
 
 class Processor(object):
@@ -133,8 +171,8 @@ class Processor(object):
         # config and helpers
         self.debug_print = debug_print
         self.separate_streams = separate_streams
-        self.min_buffer_ns = 10 * SEC_PER_NANOSEC  # keep x sec of sorting/sync buffer as per image timestamps
-        self.steering_offset_ns = 0  # shift steering timestamps by this much going into queue FIXME test/
+        self.min_buffer_ns = 240 * SEC_PER_NANOSEC  # keep x sec of sorting/sync buffer as per image timestamps
+        self.steering_offset_ns = 0  # shift steering timestamps by this much going into queue FIXME test
         self.gps_offset_ns = 0  # shift gps timestamps by this much going into queue FIXME test
         self.bridge = CvBridge()
 
@@ -146,32 +184,46 @@ class Processor(object):
         # setup writers
         self._outdirs = []
         self._writers = []
-        num_shards = num_images//4096  # at approx 40KB per image, 4K per shard gives around 160MB per shard
         if self.separate_streams:
+            num_shards = tuple(x // 6000 for x in num_images)
             self._outdirs.append(get_outdir(save_dir, "left"))
-            self._writers.append(ShardWriter(self._outdirs[-1], 'left', num_images, num_shards=num_shards//3))
+            self._writers.append(
+                ShardWriter(self._outdirs[-1], 'left', num_images[0], max_num_shards=num_shards[0]))
             self._outdirs.append(get_outdir(save_dir, "center"))
-            self._writers.append(ShardWriter(self._outdirs[-1], 'center', num_images, num_shards=num_shards//3))
+            self._writers.append(
+                ShardWriter(self._outdirs[-1], 'center', num_images[1], max_num_shards=num_shards[1]))
             self._outdirs.append(get_outdir(save_dir, "right"))
-            self._writers.append(ShardWriter(self._outdirs[-1], 'right', num_images, num_shards=num_shards//3))
+            self._writers.append(
+                ShardWriter(self._outdirs[-1], 'right', num_images[2], max_num_shards=num_shards[2]))
         else:
+            # at approx 35-40KB per image, 6K per shard gives around 200MB per shard
+            num_shards = num_images[0] // 6000
             self._outdirs.append(get_outdir(save_dir, "combined"))
-            self._writers.append(ShardWriter(self._outdirs[-1], 'combined', num_images, num_shards=num_shards))
+            self._writers.append(
+                ShardWriter(self._outdirs[-1], 'combined', num_images[0], max_num_shards=num_shards))
 
         # stats, counts, and queues
         self.written_image_count = 0
+        self.discarded_image_count = 0
         self.reset_queues()
 
     def reset_queues(self):
         self.latest_image_timestamp = None
+        self._write_enable = False
+        self._speed_above_min_count = 0
         self._steering_queue = []   # time sorted steering heap
+        self._gear_queue = [] # time sorted gear heap
         self._gps_queue = []  # time sorted gps heap
         self._images_queue = []  # time sorted image heap
+        self._head_gear_sample = None
         self._head_steering_sample = None  # most recent steering timestamp/topic/msg sample pulled from queue
         self._head_gps_sample = None  # most recent gps timestamp/topic/msg sample pulled from queue
+        self._debug_gps_next = False
 
-    def write_example(self, image_msg, steering_msg, gps_msg, dataset_id=0):
+    def write_example(self, image_msg, steering_list, gps_list, dataset_id=0):
         try:
+            assert isinstance(steering_list, list)
+            assert isinstance(gps_list, list)
             writer = self._writers[0]
             if self.separate_streams:
                 if image_msg.header.frame_id[0] == 'c':
@@ -210,9 +262,9 @@ class Processor(object):
                 'image/encoded': feature_bytes(encoded.tobytes()),
                 'image/dataset_id': feature_int64(dataset_id),
             }
-            steering_dict = to_steering_dict(steering_msg)
+            steering_dict = to_steering_dict(steering_list, target_sample_count=2)
             feature_dict.update(steering_dict)
-            gps_dict = to_gps_dict(gps_msg)
+            gps_dict = to_gps_dict(gps_list, target_sample_count=2)
             feature_dict.update(gps_dict)
             example = tf.train.Example(features=tf.train.Features(feature=feature_dict))
             writer.write(example)
@@ -225,47 +277,98 @@ class Processor(object):
         for timestamp, topic, msg in messages:
             if topic in CAMERA_TOPICS:
                 heapq.heappush(self._images_queue, (timestamp, topic, msg))
-                if not self.latest_image_timestamp > timestamp > self.latest_image_timestamp:
+                if not self.latest_image_timestamp or timestamp > self.latest_image_timestamp:
                     self.latest_image_timestamp = timestamp
             elif topic == STEERING_TOPIC:
                 if self.debug_print:
-                    print("steering %d, %f" % (msg.header.stamp.to_nsec(), msg.steering_wheel_angle))
+                    print("%s: steering, %f" % (ns_to_str(timestamp), msg.steering_wheel_angle))
                 timestamp += self.steering_offset_ns
-                heapq.heappush(self._steering_queue, (timestamp, topic, msg))
+                heapq.heappush(self._steering_queue, (timestamp, msg))
+            elif topic == GEAR_TOPIC:
+                timestamp += self.steering_offset_ns # same offset as steering
+                heapq.heappush(self._gear_queue, (timestamp, msg))
             elif topic == GPS_FIX_TOPIC:
-                if self.debug_print:
-                    print("gps      %d, (%d, %d)" % (timestamp, msg.latitude, msg.longitude))
+                if self._debug_gps_next or self.debug_print:
+                    print("%s: gps     , (%f, %f)" % (ns_to_str(timestamp), msg.latitude, msg.longitude))
+                    self._debug_gps_next = False
                 timestamp += self.gps_offset_ns
-                heapq.heappush(self._gps_queue, (timestamp, topic, msg))
+                heapq.heappush(self._gps_queue, (timestamp, msg))
+
+    def _update_write_enable(self, image_timestamp, steering_samples, latest_gear_sample):
+        gear_forward = False if latest_gear_sample and latest_gear_sample[1].state.gear <= 2 else True
+        gear = latest_gear_sample[1].state.gear if latest_gear_sample else 0
+        for sample in steering_samples:
+            sample_speed = sample[1].speed
+            if self._write_enable:
+                if sample_speed < MIN_SPEED or not gear_forward:
+                    # disable writing instantly on sample below minimum
+                    self._write_enable = False
+                    print('%s: Write disable. Speed: %s, gear: %d '
+                          % (ns_to_str(image_timestamp), sample_speed, gear))
+                    self._speed_above_min_count = 0
+                else:
+                    self._speed_above_min_count += 1
+            else:  # not write enable
+                # enable writing after threshold number samples above minimum seen
+                if sample_speed < MIN_SPEED or not gear_forward:
+                    self._speed_above_min_count = 0
+                else:
+                    self._speed_above_min_count += 1
+                if self._speed_above_min_count > WRITE_ENABLE_SLOW_START:
+                    self._write_enable = True
+                    print('%s: Write enable. Speed: %s, gear: %d'
+                          % (ns_to_str(image_timestamp), sample_speed, gear))
 
     def pull_and_write(self, flush=False):
         while self.pull_ready(flush):
-            image_timestamp, _, image_msg = heapq.heappop(self._images_queue)
+            assert self._images_queue
+            image_timestamp, image_topic, image_msg = heapq.heappop(self._images_queue)
+            if self.debug_print:
+                print("Popped image: %d, %s" % (image_timestamp, image_topic))
 
-            #FIXME implement frame filtering
+            gear_samples = dequeue_samples_until(self._gear_queue, image_timestamp)
+            if gear_samples:
+                self._head_gear_sample = gear_samples[-1]
 
-            steering_samples = self._dequeue_until(self._steering_queue, image_timestamp)
-            # FIXME interpolate/avg steering samples
+            steering_samples = dequeue_samples_until(self._steering_queue, image_timestamp)
             if steering_samples:
                 self._head_steering_sample = steering_samples[-1]
+                self._update_write_enable(image_timestamp, steering_samples, self._head_gear_sample)
 
-            gps_samples = self._dequeue_until(self._gps_queue, image_timestamp)
-            # FIXME interpolate gps samples
+            gps_samples = dequeue_samples_until(self._gps_queue, image_timestamp)
             if gps_samples:
                 self._head_gps_sample = gps_samples[-1]
 
-            steering_msg = self._head_steering_sample[2] if self._head_steering_sample else None
-            gps_msg = self._head_gps_sample[2] if self._head_gps_sample else None
-            self.write_example(image_msg, steering_msg, gps_msg)
+            if self._write_enable:
+                steering_list = []
+                gps_list = []
+                if self._head_steering_sample:
+                    steering_list.append(self._head_steering_sample)
+                else:
+                    print('%s: Invalid head steering sample!' % ns_to_str(image_timestamp))
+                if self._steering_queue:
+                    steering_list.append(self._steering_queue[0])
+                else:
+                    print('%s: Empty steering queue!' % ns_to_str(image_timestamp))
+                if self._head_gps_sample:
+                    gps_list.append(self._head_gps_sample)
+                else:
+                    print('%s: Invalid head gps sample!' % ns_to_str(image_timestamp))
+                    self._debug_gps_next = True
+                if self._gps_queue:
+                    gps_list.append(self._gps_queue[0])
+                else:
+                    print('%s: Empty gps queue!' % ns_to_str(image_timestamp))
+                    self._debug_gps_next = True
+                #assert len(steering_list) == 2
+                #assert len(gps_list) == 2
+
+                self.write_example(image_msg, steering_list, gps_list)
+            else:
+                self.discarded_image_count += 1
 
     def pull_ready(self, flush=False):
         return self._images_queue and (flush or self._remaining_time() > self.min_buffer_ns)
-
-    def _dequeue_until(self, queue, timestamp):
-        messages = []
-        while queue and queue[0][0] < timestamp:  # or <= ??
-            messages.append(heapq.heappop(queue))
-        return messages
 
     def _remaining_time(self):
         if not self._images_queue:
@@ -293,15 +396,22 @@ def main():
     debug_print = args.debug
     separate_streams = args.separate
 
-    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC] + CAMERA_TOPICS
+    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC] + CAMERA_TOPICS
 
-    num_images = 0
+    num_images = [0, 0, 0] if separate_streams else [0]
     num_messages = 0
     bagsets = find_bagsets(input_dir, "*.bag", filter_topics)
     for bs in bagsets:
-        num_images += bs.get_message_count(CAMERA_TOPICS)
+        if separate_streams:
+            num_images[0] += bs.get_message_count([LEFT_CAMERA_COMPRESSED_TOPIC, LEFT_CAMERA_TOPIC])
+            num_images[1] += bs.get_message_count([CENTER_CAMERA_COMPRESSED_TOPIC, CENTER_CAMERA_TOPIC])
+            num_images[2] += bs.get_message_count([RIGHT_CAMERA_COMPRESSED_TOPIC, RIGHT_CAMERA_TOPIC])
+            num_images = tuple(num_images)
+        else:
+            num_images[0] += bs.get_message_count(CAMERA_TOPICS)
         num_messages += bs.get_message_count(filter_topics)
-    print("%d images, %d messages to import across %d bag sets..." % (num_images, num_messages, len(bagsets)))
+    print("%d images, %d messages to import across %d bag sets..."
+          % (sum(num_images), num_messages, len(bagsets)))
 
     processor = Processor(
         save_dir=save_dir, num_images=num_images, img_format=img_format,
@@ -309,13 +419,13 @@ def main():
 
     num_read_messages = 0  # number of messages read by cursors
     for bs in bagsets:
-        print("Processing set %s" % bs.name)
+        print("Processing set %s. %s to %s" % (bs.name, ns_to_str(bs.start_time), ns_to_str(bs.end_time)))
         sys.stdout.flush()
 
         cursor_group = CursorGroup(readers=bs.get_readers())
         while cursor_group:
             msg_tuples = []
-            cursor_group.advance_by_until(20 * SEC_PER_NANOSEC)
+            cursor_group.advance_by_until(360 * SEC_PER_NANOSEC)
             cursor_group.collect_vals(msg_tuples)
             num_read_messages += len(msg_tuples)
             processor.push_messages(msg_tuples)
@@ -326,9 +436,10 @@ def main():
         processor.reset_queues()  # ready for next bag set
 
     assert num_read_messages == num_messages
-    assert processor.written_image_count == num_images
+    assert processor.written_image_count + processor.discarded_image_count == sum(num_images)
 
-    print("Completed processing %d images to TF examples." % processor.written_image_count)
+    print("Completed processing %d images to TF examples. %d images discarded" %
+          (processor.written_image_count, processor.discarded_image_count))
     sys.stdout.flush()
 
 

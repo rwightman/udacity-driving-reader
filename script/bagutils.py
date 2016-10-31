@@ -18,6 +18,7 @@ import subprocess
 import cv2
 import yaml
 import rosbag
+import datetime
 
 
 SEC_PER_NANOSEC = 1e9
@@ -34,6 +35,14 @@ CAMERA_TOPICS = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC,
 STEERING_TOPIC = "/vehicle/steering_report"
 GPS_FIX_TOPIC = "/vehicle/gps/fix"
 
+WHEEL_SPEED_TOPIC = "/vehicle/wheel_speed_report"
+THROTTLE_TOPIC = "/vehicle/throttle_report"
+BRAKE_TOPIC = "/vehicle/brake_report"
+GEAR_TOPIC = "/vehicle/gear_report"
+IMU_TOPIC = "/vehicle/imu/data_raw"
+
+OTHER_TOPICS = [
+    WHEEL_SPEED_TOPIC, THROTTLE_TOPIC, BRAKE_TOPIC, GEAR_TOPIC, IMU_TOPIC]
 
 def get_bag_info(bag_file, nanosec=True):
     info = yaml.load(subprocess.Popen(
@@ -55,6 +64,12 @@ def get_topic_names(bag_info_yaml):
     for t in topics:
         topic_names.append(t['topic'])
     return topic_names
+
+
+def ns_to_str(timestamp_ns):
+    secs = timestamp_ns / 1e9
+    dt = datetime.datetime.fromtimestamp(secs)
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')
 
 
 class BagReader(object):
@@ -108,9 +123,9 @@ class BagSet(object):
                 self.topic_map[x] = sorted(self.topic_map[x])
 
     def _extend_range(self, start_time, end_time):
-        if start_time < self.start_time:
+        if not self.start_time or start_time < self.start_time:
             self.start_time = start_time
-        if end_time > self.end_time:
+        if not self.end_time or end_time > self.end_time:
             self.end_time = end_time
 
     def write_infos(self, dest):
@@ -166,6 +181,7 @@ class BagCursor(object):
         self.read_count = 0
         self.done = False
         self.vals = []
+        self.reader = reader
         self._iter = reader.read_messages()
 
     def __bool__(self):
@@ -214,6 +230,9 @@ class BagCursor(object):
 
     def clear_vals(self):
         self.vals = []
+
+    def __repr__(self):
+        return "Cursor for bags: %s, topics: %s" % (str(self.reader.bagfiles), str(self.reader.topics))
 
 
 class CursorGroup(object):
