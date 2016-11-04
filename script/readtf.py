@@ -43,7 +43,7 @@ def example_parser(example_serialized):
     return features['image/encoded'], image_timestamp, steering_angles, steering_timestamps
 
 
-def create_read_graph(data_dir, name, num_readers=1, estimated_examples_per_shard=64, coder=None):
+def create_read_graph(data_dir, name, num_readers=4, estimated_examples_per_shard=64, coder=None):
     # Get sharded tf example files for the dataset
     data_files = datafiles(data_dir, name)
 
@@ -65,24 +65,31 @@ def create_read_graph(data_dir, name, num_readers=1, estimated_examples_per_shar
         tf.train.queue_runner.add_queue_runner(tf.train.queue_runner.QueueRunner(examples_queue, enqueue_ops))
     else:
         reader = tf.TFRecordReader()
-        #_, example_serialized = reader.read(filename_queue)
+        _, example_serialized = reader.read(filename_queue)
 
     for x in range(10):
-        reader = tf.TFRecordReader()
-        _, example_serialized = reader.read(filename_queue)
         image_buffer, image_timestamp, steering_angles, steering_timestamps = example_parser(example_serialized)
         decoded_image = tf.image.decode_jpeg(image_buffer)
-        processed.append([decoded_image, image_timestamp, steering_angles, steering_timestamps])
+        print(decoded_image.get_shape(), image_timestamp.get_shape(), steering_angles.get_shape(), steering_timestamps.get_shape())
+        decoded_image = tf.reshape(decoded_image, shape=[480, 640, 3])
+        processed.append((decoded_image, image_timestamp, steering_angles, steering_timestamps))
 
-    return processed
+    batch_size = 10
+    batch_queue_capacity = 2 * batch_size
+    batch_data = tf.train.batch_join(
+        processed,
+        batch_size=batch_size,
+        capacity=batch_queue_capacity)
+
+    return batch_data
 
 
 def main():
-    data_dir = '/output/center'
+    data_dir = '/output/combined'
     num_images = 1452601
 
     # Build graph and initialize variables
-    read_op = create_read_graph(data_dir, 'center')
+    read_op = create_read_graph(data_dir, 'combined')
     init_op = tf.group(tf.initialize_all_variables(), tf.initialize_local_variables())
     sess = tf.Session()
     sess.run(init_op)
@@ -93,16 +100,12 @@ def main():
     read_count = 0
     try:
         while read_count < num_images and not coord.should_stop():
-            read_output = sess.run(read_op)
-            for o in read_output:
-                #print('Output: %d' % o[1])
-                decoded_image = o[0]
-                assert len(o[2]) == 2
-                print(o[2])
-                #print(o[3])
-                assert len(decoded_image.shape) == 3
+            images, timestamps, angles, _ = sess.run(read_op)
+            for i in range(images.shape[0]):
+                decoded_image = images[i]
                 assert decoded_image.shape[2] == 3
-            read_count += len(read_output)
+                print(angles[i])
+                read_count += 1
             if not read_count % 1000:
                 print("Read %d examples" % read_count)
 

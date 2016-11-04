@@ -148,7 +148,7 @@ class ShardWriter():
 
 
 # FIXME lame constants
-MIN_SPEED = 2.22  # 2.22 m/s ~ 8km/h ~ 5mph
+MIN_SPEED = 2.0  # 2 m/s ~ 8km/h ~ 5mph
 WRITE_ENABLE_SLOW_START = 10  # 10 steering samples above min speed before restart
 
 
@@ -164,47 +164,36 @@ class Processor(object):
     def __init__(self,
                  save_dir,
                  num_images,
-                 img_format='jpg',
-                 separate_streams=False,
+                 name='records',
+                 subset='train',
+                 image_fmt='jpg',
                  debug_print=False):
 
         # config and helpers
         self.debug_print = debug_print
-        self.separate_streams = separate_streams
         self.min_buffer_ns = 240 * SEC_PER_NANOSEC  # keep x sec of sorting/sync buffer as per image timestamps
         self.steering_offset_ns = 0  # shift steering timestamps by this much going into queue FIXME test
         self.gps_offset_ns = 0  # shift gps timestamps by this much going into queue FIXME test
         self.bridge = CvBridge()
 
         # example fixed write params
-        self.write_img_format = img_format
+        self.write_image_fmt = image_fmt
         self.write_colorspace = b'RGB'
         self.write_channels = 3
 
-        # setup writers
-        self._outdirs = []
-        self._writers = []
-        if self.separate_streams:
-            num_shards = tuple(x // 6000 for x in num_images)
-            self._outdirs.append(get_outdir(save_dir, "left"))
-            self._writers.append(
-                ShardWriter(self._outdirs[-1], 'left', num_images[0], max_num_shards=num_shards[0]))
-            self._outdirs.append(get_outdir(save_dir, "center"))
-            self._writers.append(
-                ShardWriter(self._outdirs[-1], 'center', num_images[1], max_num_shards=num_shards[1]))
-            self._outdirs.append(get_outdir(save_dir, "right"))
-            self._writers.append(
-                ShardWriter(self._outdirs[-1], 'right', num_images[2], max_num_shards=num_shards[2]))
-        else:
-            # at approx 35-40KB per image, 6K per shard gives around 200MB per shard
-            num_shards = num_images[0] // 6000
-            self._outdirs.append(get_outdir(save_dir, "combined"))
-            self._writers.append(
-                ShardWriter(self._outdirs[-1], 'combined', num_images[0], max_num_shards=num_shards))
+        # setup writer
+        # at approx 35-40KB per image, 6K per shard gives around 200MB per shard
+        #FIXME maybe support splitting data stream into train/validation from the same bags?
+        num_shards = num_images // 6000
+        self._outdir = get_outdir(save_dir, name)
+        self._writer = ShardWriter(self._outdir, subset, num_images, max_num_shards=num_shards)
 
         # stats, counts, and queues
         self.written_image_count = 0
         self.discarded_image_count = 0
+        self.collect_image_stats = False
+        self.image_means = []
+        self.image_variances = []
         self.reset_queues()
 
     def reset_queues(self):
@@ -224,12 +213,7 @@ class Processor(object):
         try:
             assert isinstance(steering_list, list)
             assert isinstance(gps_list, list)
-            writer = self._writers[0]
-            if self.separate_streams:
-                if image_msg.header.frame_id[0] == 'c':
-                    writer = self._writers[1]
-                elif image_msg.header.frame_id[0] == 'r':
-                    writer = self._writers[2]
+            writer = self._writer
             image_width = 0
             image_height = 0
             if hasattr(image_msg, 'format') and 'compressed' in image_msg.format:
@@ -241,15 +225,20 @@ class Processor(object):
                 image_height = cv_image.shape[0]
                 image_width = cv_image.shape[1]
                 # Avoid re-encoding if we don't have to
-                if check_image_format(image_msg.data) == self.write_img_format:
+                if check_image_format(image_msg.data) == self.write_image_fmt:
                     encoded = buf
                 else:
-                    _, encoded = cv2.imencode('.' + self.write_img_format, cv_image)
+                    _, encoded = cv2.imencode('.' + self.write_image_fmt, cv_image)
             else:
                 image_width = image_msg.width
                 image_height = image_msg.height
                 cv_image = self.bridge.imgmsg_to_cv2(image_msg, "bgr8")
-                _, encoded = cv2.imencode('.' + self.write_img_format, cv_image)
+                _, encoded = cv2.imencode('.' + self.write_image_fmt, cv_image)
+
+            if self.collect_image_stats:
+                mean, std = cv2.meanStdDev(cv_image)
+                self.image_means.append(np.squeeze(mean))
+                self.image_variances.append(np.squeeze(np.square(std)))
 
             feature_dict = {
                 'image/timestamp': feature_int64(image_msg.header.stamp.to_nsec()),
@@ -258,7 +247,7 @@ class Processor(object):
                 'image/width': feature_int64(image_width),
                 'image/channels': feature_int64(self.write_channels),
                 'image/colorspace': feature_bytes(self.write_colorspace),
-                'image/format': feature_bytes(self.write_img_format),
+                'image/format': feature_bytes(self.write_image_fmt),
                 'image/encoded': feature_bytes(encoded.tobytes()),
                 'image/dataset_id': feature_int64(dataset_id),
             }
@@ -360,8 +349,6 @@ class Processor(object):
                 else:
                     print('%s: Empty gps queue!' % ns_to_str(image_timestamp))
                     self._debug_gps_next = True
-                #assert len(steering_list) == 2
-                #assert len(gps_list) == 2
 
                 self.write_example(image_msg, steering_list, gps_list)
             else:
@@ -382,40 +369,39 @@ def main():
         help='Output folder')
     parser.add_argument('-b', '--indir', type=str, nargs='?', default='/data/',
         help='Input bag file')
-    parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
+    parser.add_argument('-f', '--image_fmt', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
-    parser.add_argument('-s', '--separate', dest='separate', action='store_true', help='Separate sets per camera')
+    parser.add_argument('-s', '--subset', type=str, nargs='?', help="Data subset. 'train' or 'validation'")
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(separate=False)
     parser.set_defaults(debug=False)
     args = parser.parse_args()
 
-    img_format = args.img_format
+    image_fmt = args.image_fmt
     save_dir = args.outdir
     input_dir = args.indir
     debug_print = args.debug
-    separate_streams = args.separate
+    subset = args.subset
 
-    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC] + CAMERA_TOPICS
+    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC]
+    if subset == 'validation' or subset == 'valid' or subset == 'eval':
+        filter_camera_topics = VALIDATION_CAMERA_TOPICS
+    else:
+        filter_camera_topics = CAMERA_TOPICS
+    filter_topics += filter_camera_topics
 
-    num_images = [0, 0, 0] if separate_streams else [0]
+    num_images = 0
     num_messages = 0
-    bagsets = find_bagsets(input_dir, "*.bag", filter_topics)
+    bagsets = find_bagsets(input_dir, filter_topics=filter_topics)
     for bs in bagsets:
-        if separate_streams:
-            num_images[0] += bs.get_message_count([LEFT_CAMERA_COMPRESSED_TOPIC, LEFT_CAMERA_TOPIC])
-            num_images[1] += bs.get_message_count([CENTER_CAMERA_COMPRESSED_TOPIC, CENTER_CAMERA_TOPIC])
-            num_images[2] += bs.get_message_count([RIGHT_CAMERA_COMPRESSED_TOPIC, RIGHT_CAMERA_TOPIC])
-            num_images = tuple(num_images)
-        else:
-            num_images[0] += bs.get_message_count(CAMERA_TOPICS)
+        num_images += bs.get_message_count(filter_camera_topics)
         num_messages += bs.get_message_count(filter_topics)
     print("%d images, %d messages to import across %d bag sets..."
-          % (sum(num_images), num_messages, len(bagsets)))
+          % (num_images, num_messages, len(bagsets)))
 
     processor = Processor(
-        save_dir=save_dir, num_images=num_images, img_format=img_format,
-        separate_streams=separate_streams, debug_print=debug_print)
+        save_dir=save_dir, num_images=num_images, image_fmt=image_fmt,
+        subset=subset, debug_print=debug_print)
 
     num_read_messages = 0  # number of messages read by cursors
     for bs in bagsets:
@@ -436,10 +422,14 @@ def main():
         processor.reset_queues()  # ready for next bag set
 
     assert num_read_messages == num_messages
-    assert processor.written_image_count + processor.discarded_image_count == sum(num_images)
+    assert processor.written_image_count + processor.discarded_image_count == num_images
 
     print("Completed processing %d images to TF examples. %d images discarded" %
           (processor.written_image_count, processor.discarded_image_count))
+    if processor.collect_image_stats:
+        channel_mean = np.mean(processor.image_means, axis=0, dtype=np.float64)[::-1]
+        channel_std = np.sqrt(np.mean(processor.image_variances, axis=0, dtype=np.float64))[::-1]
+        print("Mean: ", channel_mean, ". Std deviation: ", channel_std)
     sys.stdout.flush()
 
 

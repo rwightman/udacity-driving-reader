@@ -146,7 +146,7 @@ def main():
     if include_others:
         filter_topics += OTHER_TOPICS
 
-    bagsets = find_bagsets(indir, "*.bag", filter_topics)
+    bagsets = find_bagsets(indir, filter_topics=filter_topics)
     for bs in bagsets:
         print("Processing set %s" % bs.name)
         sys.stdout.flush()
