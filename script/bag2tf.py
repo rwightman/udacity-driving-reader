@@ -45,6 +45,14 @@ def feature_bytes_list(value_list, skip_convert=False):
     return tf.train.Feature(bytes_list=tf.train.BytesList(value=value_list))
 
 
+def str2float(string):
+    try:
+        f = float(string)
+        return f, True
+    except ValueError:
+        return 0.0, False
+
+
 def get_outdir(base_dir, name):
     outdir = os.path.join(base_dir, name)
     if not os.path.exists(outdir):
@@ -124,13 +132,13 @@ class ShardWriter():
         self.name = name
         self.max_num_shards = max_num_shards
         self.num_entries_per_shard = num_entries // max_num_shards
-        self._writer = None
+        self.write_counter = 0
         self._shard_counter = 0
-        self._counter = 0
+        self._writer = None
 
     def _update_writer(self):
         if not self._writer or self._shard_counter >= self.num_entries_per_shard:
-            shard = self._counter // self.num_entries_per_shard
+            shard = self.write_counter // self.num_entries_per_shard
             assert(shard <= self.max_num_shards)
             output_filename = '%s-%.5d-of-%.5d' % (self.name, shard, self.max_num_shards-1)
             output_file = os.path.join(self.outdir, output_filename)
@@ -141,9 +149,9 @@ class ShardWriter():
         self._update_writer()
         self._writer.write(example.SerializeToString())
         self._shard_counter += 1
-        self._counter += 1
-        if not self._counter % 1000:
-            print('Written %d of %d images for %s' % (self._counter, self.num_entries, self.name))
+        self.write_counter += 1
+        if not self.write_counter % 1000:
+            print('Written %d of %d images for %s' % (self.write_counter, self.num_entries, self.name))
             sys.stdout.flush()
 
 
@@ -164,8 +172,8 @@ class Processor(object):
     def __init__(self,
                  save_dir,
                  num_images,
+                 splits=('train', 1.0),
                  name='records',
-                 subset='train',
                  image_fmt='jpg',
                  debug_print=False):
 
@@ -186,15 +194,35 @@ class Processor(object):
         #FIXME maybe support splitting data stream into train/validation from the same bags?
         num_shards = num_images // 6000
         self._outdir = get_outdir(save_dir, name)
-        self._writer = ShardWriter(self._outdir, subset, num_images, max_num_shards=num_shards)
+        self._writers = {}
+        for s in splits:
+            scaled_images = num_images * s[1]
+            scaled_shards = num_shards * s[1]
+            if s[0] == 'validation':
+                scaled_images //= 3
+                scaled_shards //= 3
+            writer = ShardWriter(self._outdir, s[0], scaled_images, max_num_shards=scaled_shards)
+            self._writers[s[0]] = writer
+        self._splits = splits
 
         # stats, counts, and queues
         self.written_image_count = 0
         self.discarded_image_count = 0
         self.collect_image_stats = False
+        self.collect_io_stats = True
         self.image_means = []
         self.image_variances = []
+        self.steering_vals = []
+        self.gps_vals = []
         self.reset_queues()
+
+    def _select_writer(self):
+        r = np.random.random_sample()
+        for s in self._splits:
+            if r < s[1]:
+                return self._writers[s[0]]
+            r = r - s[1]
+        return None
 
     def reset_queues(self):
         self.latest_image_timestamp = None
@@ -209,11 +237,20 @@ class Processor(object):
         self._head_gps_sample = None  # most recent gps timestamp/topic/msg sample pulled from queue
         self._debug_gps_next = False
 
-    def write_example(self, image_msg, steering_list, gps_list, dataset_id=0):
+    def write_example(self, image_topic, image_msg, steering_list, gps_list, dataset_id=0):
         try:
             assert isinstance(steering_list, list)
             assert isinstance(gps_list, list)
-            writer = self._writer
+            
+            writer = self._select_writer()
+            if writer is None:
+                self.discarded_image_count += 1
+                return 
+            elif writer.name == 'validation':
+                if image_topic not in VALIDATION_CAMERA_TOPICS:
+                    self.discarded_image_count += 1
+                    return
+
             image_width = 0
             image_height = 0
             if hasattr(image_msg, 'format') and 'compressed' in image_msg.format:
@@ -239,6 +276,10 @@ class Processor(object):
                 mean, std = cv2.meanStdDev(cv_image)
                 self.image_means.append(np.squeeze(mean))
                 self.image_variances.append(np.squeeze(np.square(std)))
+
+            if self.collect_io_stats:
+                self.steering_vals.extend([x[1].steering_wheel_angle for x in steering_list])
+                self.gps_vals.extend([[x[1].latitude, x[1].longitude] for x in gps_list])
 
             feature_dict = {
                 'image/timestamp': feature_int64(image_msg.header.stamp.to_nsec()),
@@ -350,17 +391,23 @@ class Processor(object):
                     print('%s: Empty gps queue!' % ns_to_str(image_timestamp))
                     self._debug_gps_next = True
 
-                self.write_example(image_msg, steering_list, gps_list)
+                self.write_example(image_topic, image_msg, steering_list, gps_list)
             else:
                 self.discarded_image_count += 1
-
-    def pull_ready(self, flush=False):
-        return self._images_queue and (flush or self._remaining_time() > self.min_buffer_ns)
 
     def _remaining_time(self):
         if not self._images_queue:
             return 0
         return self.latest_image_timestamp - self._images_queue[0][0]
+
+    def pull_ready(self, flush=False):
+        return self._images_queue and (flush or self._remaining_time() > self.min_buffer_ns)
+
+    def get_writer_counts(self):
+        counts = []
+        for w in self._writers.values():
+            counts.append((w.name, w.write_counter))
+        return counts
 
 
 def main():
@@ -371,7 +418,8 @@ def main():
         help='Input bag file')
     parser.add_argument('-f', '--image_fmt', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
-    parser.add_argument('-s', '--subset', type=str, nargs='?', help="Data subset. 'train' or 'validation'")
+    parser.add_argument('-s', '--split', type=str, nargs='?', default='train',
+        help="Data subset. 'train' or 'validation'")
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
     parser.set_defaults(separate=False)
     parser.set_defaults(debug=False)
@@ -381,13 +429,23 @@ def main():
     save_dir = args.outdir
     input_dir = args.indir
     debug_print = args.debug
-    subset = args.subset
+    split = args.split
 
     filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC]
-    if subset == 'validation' or subset == 'valid' or subset == 'eval':
-        filter_camera_topics = VALIDATION_CAMERA_TOPICS
-    else:
+    split_val, is_float = str2float(split)
+    if is_float and split_val > 0.0 and split_val < 1.0:
+        # split specified as float val indicating %validation data
         filter_camera_topics = CAMERA_TOPICS
+        split_list = [('train', 1-split_val), ('validation', split_val)]
+    elif split == 'validation' or (is_float and split_val == 1.0):
+        # split specified to be validation, set as 100% validation
+        filter_camera_topics = VALIDATION_CAMERA_TOPICS
+        split_list = [(split, 1.0)]
+    else:
+        # 100% train split
+        assert split == 'train'
+        filter_camera_topics = CAMERA_TOPICS
+        split_list = [(split, 1.0)]
     filter_topics += filter_camera_topics
 
     num_images = 0
@@ -401,35 +459,65 @@ def main():
 
     processor = Processor(
         save_dir=save_dir, num_images=num_images, image_fmt=image_fmt,
-        subset=subset, debug_print=debug_print)
+        splits=split_list, debug_print=debug_print)
 
     num_read_messages = 0  # number of messages read by cursors
-    for bs in bagsets:
-        print("Processing set %s. %s to %s" % (bs.name, ns_to_str(bs.start_time), ns_to_str(bs.end_time)))
-        sys.stdout.flush()
+    aborted = False
+    try:
+        for bs in bagsets:
+            print("Processing set %s. %s to %s" % (bs.name, ns_to_str(bs.start_time), ns_to_str(bs.end_time)))
+            sys.stdout.flush()
 
-        cursor_group = CursorGroup(readers=bs.get_readers())
-        while cursor_group:
-            msg_tuples = []
-            cursor_group.advance_by_until(360 * SEC_PER_NANOSEC)
-            cursor_group.collect_vals(msg_tuples)
-            num_read_messages += len(msg_tuples)
-            processor.push_messages(msg_tuples)
-            if processor.pull_ready():
-                processor.pull_and_write()
+            cursor_group = CursorGroup(readers=bs.get_readers())
+            while cursor_group:
+                msg_tuples = []
+                cursor_group.advance_by_until(360 * SEC_PER_NANOSEC)
+                cursor_group.collect_vals(msg_tuples)
+                num_read_messages += len(msg_tuples)
+                processor.push_messages(msg_tuples)
+                if processor.pull_ready():
+                    processor.pull_and_write()
 
-        processor.pull_and_write(flush=True)  # flush remaining messages after read cursors are done
-        processor.reset_queues()  # ready for next bag set
+            processor.pull_and_write(flush=True)  # flush remaining messages after read cursors are done
+            processor.reset_queues()  # ready for next bag set
+    except KeyboardInterrupt:
+        aborted = True
 
-    assert num_read_messages == num_messages
-    assert processor.written_image_count + processor.discarded_image_count == num_images
+    if not aborted:
+        assert num_read_messages == num_messages
+        assert processor.written_image_count + processor.discarded_image_count == num_images
 
     print("Completed processing %d images to TF examples. %d images discarded" %
           (processor.written_image_count, processor.discarded_image_count))
+
+    print("Writer counts: ")
+    [print("\t%s: %d" % (x[0], x[1])) for x in processor.get_writer_counts()]
+
     if processor.collect_image_stats:
         channel_mean = np.mean(processor.image_means, axis=0, dtype=np.float64)[::-1]
         channel_std = np.sqrt(np.mean(processor.image_variances, axis=0, dtype=np.float64))[::-1]
         print("Mean: ", channel_mean, ". Std deviation: ", channel_std)
+
+    if processor.collect_io_stats:
+        steering_mean = np.mean(processor.steering_vals, axis=0, dtype=np.float64)
+        steering_std = np.std(processor.steering_vals, axis=0, dtype=np.float64)
+        steering_min = np.min(processor.steering_vals, axis=0)
+        steering_max = np.max(processor.steering_vals, axis=0)
+        gps_mean = np.mean(processor.gps_vals, axis=0, dtype=np.float64)
+        gps_std = np.std(processor.gps_vals, axis=0, dtype=np.float64)
+        gps_min = np.min(processor.gps_vals, axis=0)
+        gps_max = np.max(processor.gps_vals, axis=0)
+        print("Steering: ")
+        print("\tmean: ", steering_mean)
+        print("\tstd: ", steering_std)
+        print("\tmin: ", steering_min)
+        print("\tmax: ", steering_max)
+        print("Gps: ")
+        print("\tmean: ", gps_mean)
+        print("\tstd: ", gps_std)
+        print("\tmin: ", gps_min)
+        print("\tmax: ", gps_max)
+
     sys.stdout.flush()
 
 
