@@ -61,7 +61,6 @@ def write_image(bridge, outdir, msg, fmt='png'):
 
 
 def camera2dict(msg, write_results, camera_dict):
-    camera_dict["seq"].append(msg.header.seq)
     camera_dict["timestamp"].append(msg.header.stamp.to_nsec())
     camera_dict["width"].append(write_results['width'] if 'width' in write_results else msg.width)
     camera_dict['height'].append(write_results['height'] if 'height' in write_results else msg.height)
@@ -70,7 +69,6 @@ def camera2dict(msg, write_results, camera_dict):
 
 
 def steering2dict(msg, steering_dict):
-    steering_dict["seq"].append(msg.header.seq)
     steering_dict["timestamp"].append(msg.header.stamp.to_nsec())
     steering_dict["angle"].append(msg.steering_wheel_angle)
     steering_dict["torque"].append(msg.steering_wheel_torque)
@@ -78,13 +76,35 @@ def steering2dict(msg, steering_dict):
 
 
 def gps2dict(msg, gps_dict):
-    gps_dict["seq"].append(msg.header.seq)
     gps_dict["timestamp"].append(msg.header.stamp.to_nsec())
     gps_dict["status"].append(msg.status.status)
     gps_dict["service"].append(msg.status.service)
     gps_dict["lat"].append(msg.latitude)
     gps_dict["long"].append(msg.longitude)
     gps_dict["alt"].append(msg.altitude)
+
+
+def imu2dict(msg, imu_dict):
+    imu_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    imu_dict["ax"].append(msg.linear_acceleration.x)
+    imu_dict["ay"].append(msg.linear_acceleration.y)
+    imu_dict["az"].append(msg.linear_acceleration.z)
+
+
+def gear2dict(msg, gear_dict):
+    gear_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    gear_dict["gear_state"].append(msg.state.gear)
+    gear_dict["gear_cmd"].append(msg.cmd.gear)
+
+
+def throttle2dict(msg, throt_dict):
+    throt_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    throt_dict["throttle_input"].append(msg.pedal_input)
+
+
+def brake2dict(msg, brake_dict):
+    brake_dict["timestamp"].append(msg.header.stamp.to_nsec())
+    brake_dict["brake_input"].append(msg.pedal_input)
 
 
 def camera_select(topic, select_from):
@@ -106,23 +126,30 @@ def main():
         help='Input folder where bagfiles are located')
     parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
+    parser.add_argument('-m', dest='msg_only', action='store_true', help='Messages only, no immages')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
+    parser.set_defaults(msg_only=False)
     parser.set_defaults(debug=False)
     args = parser.parse_args()
 
     img_format = args.img_format
     base_outdir = args.outdir
     indir = args.indir
+    msg_only = args.msg_only
     debug_print = args.debug
 
     bridge = CvBridge()
 
-    include_images = True
+    include_images = False if msg_only else True
+    include_others = True
+
     filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC]
     if include_images:
         filter_topics += CAMERA_TOPICS
+    if include_others:
+        filter_topics += OTHER_TOPICS
 
-    bagsets = find_bagsets(indir, "*.bag", filter_topics)
+    bagsets = find_bagsets(indir, filter_topics=filter_topics)
     for bs in bagsets:
         print("Processing set %s" % bs.name)
         sys.stdout.flush()
@@ -132,14 +159,27 @@ def main():
         center_outdir = get_outdir(dataset_outdir, "center")
         right_outdir = get_outdir(dataset_outdir, "right")
 
-        camera_cols = ["seq", "timestamp", "width", "height", "frame_id", "filename"]
+        camera_cols = ["timestamp", "width", "height", "frame_id", "filename"]
         camera_dict = defaultdict(list)
 
-        steering_cols = ["seq", "timestamp", "angle", "torque", "speed"]
+        steering_cols = ["timestamp", "angle", "torque", "speed"]
         steering_dict = defaultdict(list)
 
-        gps_cols = ["seq", "timestamp", "status", "service", "lat", "long", "alt"]
+        gps_cols = ["timestamp", "status", "service", "lat", "long", "alt"]
         gps_dict = defaultdict(list)
+
+        if include_others:
+            imu_cols = ["timestamp", "ax", "ay", "az"]
+            imu_dict = defaultdict(list)
+
+            throttle_cols = ["timestamp", "throttle_input"]
+            throttle_dict = defaultdict(list)
+
+            brake_cols = ["timestamp", "brake_input"]
+            brake_dict = defaultdict(list)
+
+            gear_cols = ["timestamp", "gear_state", "gear_cmd"]
+            gear_dict = defaultdict(list)
 
         bs.write_infos(dataset_outdir)
         readers = bs.get_readers()
@@ -171,12 +211,27 @@ def main():
 
                 gps2dict(msg, gps_dict)
                 stats['msg_count'] += 1
+            else:
+                if include_others:
+                    if topic == GEAR_TOPIC:
+                        gear2dict(msg, gear_dict)
+                        stats['msg_count'] += 1
+                    elif topic == THROTTLE_TOPIC:
+                        throttle2dict(msg, throttle_dict)
+                        stats['msg_count'] += 1
+                    elif topic == BRAKE_TOPIC:
+                        brake2dict(msg, brake_dict)
+                        stats['msg_count'] += 1
+                    elif topic == IMU_TOPIC:
+                        imu2dict(msg, imu_dict)
+                        stats['msg_count'] += 1
 
         # no need to cycle through readers in any order for dumping, rip through each on in sequence
         for reader in readers:
             for result in reader.read_messages():
                 _process_msg(*result, stats=stats_acc)
-                if stats_acc['img_count'] % 1000 == 0 or stats_acc['msg_count'] % 5000 == 0:
+                if ((stats_acc['img_count'] and stats_acc['img_count'] % 1000 == 0) or
+                        (stats_acc['msg_count'] and stats_acc['msg_count'] % 10000 == 0)):
                     print("%d images, %d messages processed..." %
                           (stats_acc['img_count'], stats_acc['msg_count']))
                     sys.stdout.flush()
@@ -185,9 +240,10 @@ def main():
               (stats_acc['img_count'], stats_acc['msg_count']))
         sys.stdout.flush()
 
-        camera_csv_path = os.path.join(dataset_outdir, 'camera.csv')
-        camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
-        camera_df.to_csv(camera_csv_path, index=False)
+        if include_images:
+            camera_csv_path = os.path.join(dataset_outdir, 'camera.csv')
+            camera_df = pd.DataFrame(data=camera_dict, columns=camera_cols)
+            camera_df.to_csv(camera_csv_path, index=False)
 
         steering_csv_path = os.path.join(dataset_outdir, 'steering.csv')
         steering_df = pd.DataFrame(data=steering_dict, columns=steering_cols)
@@ -197,8 +253,25 @@ def main():
         gps_df = pd.DataFrame(data=gps_dict, columns=gps_cols)
         gps_df.to_csv(gps_csv_path, index=False)
 
+        if include_others:
+            gear_csv_path = os.path.join(dataset_outdir, 'gear.csv')
+            gear_df = pd.DataFrame(data=gear_dict, columns=gear_cols)
+            gear_df.to_csv(gear_csv_path, index=False)
+
+            throttle_csv_path = os.path.join(dataset_outdir, 'throttle.csv')
+            throttle_df = pd.DataFrame(data=throttle_dict, columns=throttle_cols)
+            throttle_df.to_csv(throttle_csv_path, index=False)
+
+            brake_csv_path = os.path.join(dataset_outdir, 'brake.csv')
+            brake_df = pd.DataFrame(data=brake_dict, columns=brake_cols)
+            brake_df.to_csv(brake_csv_path, index=False)
+
+            imu_csv_path = os.path.join(dataset_outdir, 'imu.csv')
+            imu_df = pd.DataFrame(data=imu_dict, columns=imu_cols)
+            imu_df.to_csv(imu_csv_path, index=False)
+
         gen_interpolated = True
-        if gen_interpolated:
+        if include_images and gen_interpolated:
             # A little pandas magic to interpolate steering/gps samples to camera frames
             camera_df['timestamp'] = pd.to_datetime(camera_df['timestamp'])
             camera_df.set_index(['timestamp'], inplace=True)
