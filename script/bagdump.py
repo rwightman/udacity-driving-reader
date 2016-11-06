@@ -126,18 +126,21 @@ def main():
         help='Input folder where bagfiles are located')
     parser.add_argument('-f', '--img_format', type=str, nargs='?', default='jpg',
         help='Image encode format, png or jpg')
+    parser.add_argument('-m', dest='msg_only', action='store_true', help='Messages only, no immages')
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
+    parser.set_defaults(msg_only=False)
     parser.set_defaults(debug=False)
     args = parser.parse_args()
 
     img_format = args.img_format
     base_outdir = args.outdir
     indir = args.indir
+    msg_only = args.msg_only
     debug_print = args.debug
 
     bridge = CvBridge()
 
-    include_images = False
+    include_images = False if msg_only else True
     include_others = True
 
     filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC]
@@ -227,7 +230,8 @@ def main():
         for reader in readers:
             for result in reader.read_messages():
                 _process_msg(*result, stats=stats_acc)
-                if stats_acc['img_count'] % 1000 == 0 or stats_acc['msg_count'] % 5000 == 0:
+                if ((stats_acc['img_count'] and stats_acc['img_count'] % 1000 == 0) or
+                        (stats_acc['msg_count'] and stats_acc['msg_count'] % 10000 == 0)):
                     print("%d images, %d messages processed..." %
                           (stats_acc['img_count'], stats_acc['msg_count']))
                     sys.stdout.flush()

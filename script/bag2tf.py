@@ -175,6 +175,7 @@ class Processor(object):
                  splits=('train', 1.0),
                  name='records',
                  image_fmt='jpg',
+                 center_only=False,
                  debug_print=False):
 
         # config and helpers
@@ -198,7 +199,7 @@ class Processor(object):
         for s in splits:
             scaled_images = num_images * s[1]
             scaled_shards = num_shards * s[1]
-            if s[0] == 'validation':
+            if s[0] == 'validation' and not center_only:
                 scaled_images //= 3
                 scaled_shards //= 3
             writer = ShardWriter(self._outdir, s[0], scaled_images, max_num_shards=scaled_shards)
@@ -221,7 +222,7 @@ class Processor(object):
         for s in self._splits:
             if r < s[1]:
                 return self._writers[s[0]]
-            r = r - s[1]
+            r -= s[1]
         return None
 
     def reset_queues(self):
@@ -247,7 +248,7 @@ class Processor(object):
                 self.discarded_image_count += 1
                 return 
             elif writer.name == 'validation':
-                if image_topic not in VALIDATION_CAMERA_TOPICS:
+                if image_topic not in CENTER_CAMERA_TOPICS:
                     self.discarded_image_count += 1
                     return
 
@@ -420,8 +421,12 @@ def main():
         help='Image encode format, png or jpg')
     parser.add_argument('-s', '--split', type=str, nargs='?', default='train',
         help="Data subset. 'train' or 'validation'")
+    parser.add_argument('-k', '--keep', type=float, nargs='?', default=1.0,
+        help="Keep specified percent of data. 0.0 or 1.0 is all")
+    parser.add_argument('-c', '--center', action='store_true',
+        help="Center camera only for all splits")
     parser.add_argument('-d', dest='debug', action='store_true', help='Debug print enable')
-    parser.set_defaults(separate=False)
+    parser.set_defaults(center=False)
     parser.set_defaults(debug=False)
     args = parser.parse_args()
 
@@ -429,23 +434,29 @@ def main():
     save_dir = args.outdir
     input_dir = args.indir
     debug_print = args.debug
+    center_only = args.center
     split = args.split
+    keep = args.keep
+    if keep == 0.0 or keep > 1.0:
+        # 0 is invalid, change to keep all
+        keep = 1.0
 
     filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC]
     split_val, is_float = str2float(split)
-    if is_float and split_val > 0.0 and split_val < 1.0:
+    if is_float and 0.0 < split_val < 1.0:
         # split specified as float val indicating %validation data
-        filter_camera_topics = CAMERA_TOPICS
-        split_list = [('train', 1-split_val), ('validation', split_val)]
+        filter_camera_topics = CAMERA_TOPICS if not center_only else CENTER_CAMERA_TOPICS
+        split_val *= keep
+        split_list = [('train', keep - split_val), ('validation', split_val)]
     elif split == 'validation' or (is_float and split_val == 1.0):
         # split specified to be validation, set as 100% validation
-        filter_camera_topics = VALIDATION_CAMERA_TOPICS
-        split_list = [(split, 1.0)]
+        filter_camera_topics = CENTER_CAMERA_TOPICS
+        split_list = [(split, keep)]
     else:
         # 100% train split
         assert split == 'train'
-        filter_camera_topics = CAMERA_TOPICS
-        split_list = [(split, 1.0)]
+        filter_camera_topics = CAMERA_TOPICS if not center_only else CENTER_CAMERA_TOPICS
+        split_list = [(split, keep)]
     filter_topics += filter_camera_topics
 
     num_images = 0
@@ -459,7 +470,7 @@ def main():
 
     processor = Processor(
         save_dir=save_dir, num_images=num_images, image_fmt=image_fmt,
-        splits=split_list, debug_print=debug_print)
+        splits=split_list, center_only=center_only, debug_print=debug_print)
 
     num_read_messages = 0  # number of messages read by cursors
     aborted = False
