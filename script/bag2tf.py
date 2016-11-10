@@ -156,7 +156,7 @@ class ShardWriter():
 
 
 # FIXME lame constants
-MIN_SPEED = 2.0  # 2 m/s ~ 8km/h ~ 5mph
+MIN_SPEED = 1.0  # 2 m/s ~ 8km/h ~ 5mph
 WRITE_ENABLE_SLOW_START = 10  # 10 steering samples above min speed before restart
 
 
@@ -318,7 +318,7 @@ class Processor(object):
             elif topic == GEAR_TOPIC:
                 timestamp += self.steering_offset_ns # same offset as steering
                 heapq.heappush(self._gear_queue, (timestamp, msg))
-            elif topic == GPS_FIX_TOPIC:
+            elif topic == GPS_FIX_TOPIC or topic == GPS_FIX_NEW_TOPIC:
                 if self._debug_gps_next or self.debug_print:
                     print("%s: gps     , (%f, %f)" % (ns_to_str(timestamp), msg.latitude, msg.longitude))
                     self._debug_gps_next = False
@@ -441,7 +441,7 @@ def main():
         # 0 is invalid, change to keep all
         keep = 1.0
 
-    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GEAR_TOPIC]
+    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GPS_FIX_NEW_TOPIC, GEAR_TOPIC]
     split_val, is_float = str2float(split)
     if is_float and 0.0 < split_val < 1.0:
         # split specified as float val indicating %validation data
@@ -495,8 +495,13 @@ def main():
         aborted = True
 
     if not aborted:
-        assert num_read_messages == num_messages
-        assert processor.written_image_count + processor.discarded_image_count == num_images
+        if num_read_messages != num_messages:
+            print("Number of read messages (%d) doesn't match expected count (%d)" %
+                  (num_read_messages, num_messages))
+        total_processed_images = processor.written_image_count + processor.discarded_image_count
+        if total_processed_images != num_images:
+            print("Number of processed images (%d) doesn't match expected count (%d)" %
+                  (total_processed_images, num_images))
 
     print("Completed processing %d images to TF examples. %d images discarded" %
           (processor.written_image_count, processor.discarded_image_count))

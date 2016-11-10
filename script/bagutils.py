@@ -35,6 +35,7 @@ CAMERA_TOPICS = [LEFT_CAMERA_TOPIC, CENTER_CAMERA_TOPIC, RIGHT_CAMERA_TOPIC,
 CENTER_CAMERA_TOPICS = [CENTER_CAMERA_TOPIC, CENTER_CAMERA_COMPRESSED_TOPIC]
 STEERING_TOPIC = "/vehicle/steering_report"
 GPS_FIX_TOPIC = "/vehicle/gps/fix"
+GPS_FIX_NEW_TOPIC = "/fix"
 
 WHEEL_SPEED_TOPIC = "/vehicle/wheel_speed_report"
 THROTTLE_TOPIC = "/vehicle/throttle_report"
@@ -144,8 +145,15 @@ class BagSet(object):
             self.infos.append(info)
             if self._remap_camera:
                 filter_topics = self._filter_topics_remap(filter_topics)
-            filtered = [x['topic'] for x in info['topics'] if x['topic'] in filter_topics]
+            filtered = [x['topic'] for x in info['topics'] if not filter_topics or x['topic'] in filter_topics]
+            gps_fix_replace = False
+            if GPS_FIX_NEW_TOPIC in filtered and GPS_FIX_TOPIC in filtered:
+                print("New GPS fix topic %s replacing old %s" % (GPS_FIX_NEW_TOPIC, GPS_FIX_TOPIC))
+                gps_fix_replace = True
             for x in filtered:
+                if gps_fix_replace and x == GPS_FIX_TOPIC:
+                    # skip old gps topic
+                    continue
                 self.topic_map[x].append((info['start'], info['path']))
                 self.topic_map[x] = sorted(self.topic_map[x])
 
@@ -170,8 +178,13 @@ class BagSet(object):
         for info in self.infos:
             if self._remap_camera:
                 topic_filter = self._filter_topics_remap(topic_filter)
+            filtered = [x['topic'] for x in info['topics'] if not topic_filter or x['topic'] in topic_filter]
+            gps_fix_replace = False
+            if GPS_FIX_NEW_TOPIC in filtered and GPS_FIX_TOPIC in filtered:
+                gps_fix_replace = True
             for topic in info['topics']:
-                if not topic_filter or topic['topic'] in topic_filter:
+                if ((not topic_filter or topic['topic'] in topic_filter) and
+                        (not gps_fix_replace or topic['topic'] != GPS_FIX_TOPIC)):
                     count += topic['messages']
         return count
 

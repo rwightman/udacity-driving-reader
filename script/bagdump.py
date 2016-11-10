@@ -143,7 +143,7 @@ def main():
     include_images = False if msg_only else True
     include_others = True
 
-    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC]
+    filter_topics = [STEERING_TOPIC, GPS_FIX_TOPIC, GPS_FIX_NEW_TOPIC]
     if include_images:
         filter_topics += CAMERA_TOPICS
     if include_others:
@@ -205,7 +205,7 @@ def main():
                 steering2dict(msg, steering_dict)
                 stats['msg_count'] += 1
 
-            elif topic == GPS_FIX_TOPIC:
+            elif topic == GPS_FIX_TOPIC or topic == GPS_FIX_NEW_TOPIC:
                 if debug_print:
                     print("gps      %d %d, %d" % (timestamp, msg.latitude, msg.longitude))
 
