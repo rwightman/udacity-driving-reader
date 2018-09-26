@@ -28,6 +28,8 @@ RUN wget https://bootstrap.pypa.io/get-pip.py && \
         jupyter \
         pyyaml \
     && \
+    pip install python-dateutil --upgrade \
+    && \
     python -m ipykernel.kernelspec
 
 # Install TensorFlow
