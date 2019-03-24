@@ -1,8 +1,9 @@
 #!/bin/bash
 
 # defaults
-INPUT_DIR="/data/"
-OUTPUT_DIR="/data/output"
+INPUT_DIR="$(pwd)/data"
+OUTPUT_DIR="$(pwd)/data/output"
+SCRIPT_DIR="$(pwd)/script"
 IMAGE_TAG="udacity-reader"
 RUN_SCRIPT="/bin/bash"
 INTERACTIVE="-it"
@@ -30,7 +31,7 @@ shift "$((OPTIND - 1))"
 echo "Running '$RUN_SCRIPT' with input dir '$INPUT_DIR', output dir '$OUTPUT_DIR', docker image '$IMAGE_TAG'..."
 
 docker run --rm $INTERACTIVE\
-  --volume="/$(pwd)/script:/script"\
+  --volume="$SCRIPT_DIR:/script"\
   --volume="$INPUT_DIR:/data"\
   --volume="$OUTPUT_DIR:/output"\
   $IMAGE_TAG $RUN_SCRIPT "$@"
