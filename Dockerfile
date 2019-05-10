@@ -1,36 +1,25 @@
-FROM ros:kinetic-perception
+FROM ros:melodic-perception
 
-# CPU Python 3.5 variant of Tensorflow
-ENV TENSORFLOW_VARIANT cpu/tensorflow-0.11.0rc0-cp27-none
+# CPU variant of Tensorflow
+ENV TENSORFLOW_VARIANT cpu/tensorflow-1.13.1-cp27-none
 
-# The basics 
+# The basics
 RUN apt-get update && apt-get install -q -y \
         wget \
         pkg-config \
         git-core \
-        python \
-        python-dev \
-    && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*    
+	python-dev \
+    && apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 # Install Pip n Python modules
 RUN wget https://bootstrap.pypa.io/get-pip.py && \
     python get-pip.py && \
     rm get-pip.py \
-    && \ 
-    pip --no-cache-dir install \
-        scipy \
-        numpy \
-        matplotlib \
-        pandas \
-        ipykernel \
-        jupyter \
-        pyyaml \
-    && \
-    pip install python-dateutil --upgrade \
-    && \
-    python -m ipykernel.kernelspec
+    && pip install python numpy matplotlib ipykernel python-dateutil --upgrade \
+    && python -m ipykernel.kernelspec
+
+RUN pip install scipy pandas jupyter
 
 # Install TensorFlow
 RUN pip --no-cache-dir install \
